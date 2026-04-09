@@ -6,25 +6,28 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import yfinance as yf
 
-ticker = input("Enter ticker (AAPL, TSLA, MSFT): ").upper()
+ticker = input("Enter ticker (AAPL, TSLA, MSFT): ").upper().strip()
 
-# Optional Alpha Vantage key
-alpha_key = "YOUR_ALPHA_VANTAGE_KEY"  # leave or replace
+if ticker == "":
+    raise ValueError("Invalid ticker")
+
+alpha_key = "YOUR_ALPHA_VANTAGE_KEY"
 forecast_days = 7
 num_simulations = 500
+trading_days = 252
 
 cache_file = f"{ticker}_data.csv"
 
+# ---------------------------
+# CLEAN DATA (FIXED)
+# ---------------------------
 def clean_dataframe(df):
-    """Ensure numeric columns + correct price column"""
 
     df.columns = [c.strip() for c in df.columns]
 
-    # convert everything numeric where possible
     for col in df.columns:
-        df[col] = pd.to_numeric(df[col], errors="ignore")
+        df[col] = pd.to_numeric(df[col], errors="coerce")  # FIXED
 
-    # detect price column automatically
     if "Adj Close" in df.columns:
         price_col = "Adj Close"
     elif "Close" in df.columns:
@@ -32,8 +35,13 @@ def clean_dataframe(df):
     else:
         raise Exception("No price column found")
 
+    df = df.dropna(subset=[price_col])
+
     return df, price_col
 
+# ---------------------------
+# ALPHA FETCH (FIXED)
+# ---------------------------
 def fetch_alpha(symbol):
     if alpha_key == "YOUR_ALPHA_VANTAGE_KEY":
         return None
@@ -55,7 +63,10 @@ def fetch_alpha(symbol):
         if "Time Series (Daily)" not in data:
             return None
 
-        df = pd.DataFrame.from_dict(data["Time Series (Daily)"], orient="index")
+        df = pd.DataFrame.from_dict(
+            data["Time Series (Daily)"], orient="index"
+        )
+
         df = df.rename(columns={"5. adjusted close": "Adj Close"})
         df.index = pd.to_datetime(df.index)
 
@@ -64,23 +75,31 @@ def fetch_alpha(symbol):
     except:
         return None
 
+# ---------------------------
+# YAHOO FETCH (FIXED)
+# ---------------------------
 def fetch_yahoo(symbol):
     print("Downloading from Yahoo...")
 
     for i in range(5):
         try:
             data = yf.download(symbol, period="5y", progress=False)
-            if len(data) > 100:
+
+            if data is not None and len(data) > 100:  # FIXED
                 return data
+
         except:
             pass
 
-        wait = 10 + i * 10
+        wait = 5 + i * 5
         print(f"Retrying in {wait}s...")
         time.sleep(wait)
 
     return None
 
+# ---------------------------
+# LOAD DATA
+# ---------------------------
 df = None
 
 if os.path.exists(cache_file):
@@ -107,37 +126,56 @@ if df is None:
 
 print("Data shape:", df.shape)
 
-prices = df[price_col].dropna()
+# ---------------------------
+# RETURNS (FIXED SCALING)
+# ---------------------------
+prices = df[price_col]
 
 log_returns = np.log(prices / prices.shift(1)).dropna()
 
 mu = log_returns.mean()
 sigma = log_returns.std()
 
-print("Drift:", mu)
-print("Volatility:", sigma)
+dt = 1 / trading_days  # FIXED
 
+print("Drift (daily):", mu)
+print("Volatility (daily):", sigma)
+
+# ---------------------------
+# MONTE CARLO (FIXED)
+# ---------------------------
 S0 = prices.iloc[-1]
 
 simulations = np.zeros((forecast_days, num_simulations))
 
 for i in range(num_simulations):
+
     path = [S0]
 
     for _ in range(forecast_days):
+
         shock = np.random.normal(
-            (mu - 0.5 * sigma**2),
-            sigma
+            (mu - 0.5 * sigma**2) * dt,   # FIXED
+            sigma * np.sqrt(dt)           # FIXED
         )
-        path.append(path[-1] * np.exp(shock))
+
+        next_price = path[-1] * np.exp(shock)
+        path.append(next_price)
 
     simulations[:, i] = path[1:]
 
+# ---------------------------
+# STATS
+# ---------------------------
 mean_path = simulations.mean(axis=1)
 lower = np.percentile(simulations, 5, axis=1)
 upper = np.percentile(simulations, 95, axis=1)
 
+# ---------------------------
+# OUTPUT
+# ---------------------------
 print("\nForecast:")
+
 for i in range(forecast_days):
     print(
         f"Day {i+1}: "
@@ -146,6 +184,9 @@ for i in range(forecast_days):
         f"High={upper[i]:.2f}"
     )
 
+# ---------------------------
+# PLOT
+# ---------------------------
 plt.figure(figsize=(10, 5))
 
 for i in range(50):
